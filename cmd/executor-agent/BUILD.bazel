@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "executor-agent_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/kyleconroy/aws-build-farm/cmd/executor-agent",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//internal/cas",
+        "//internal/casfs",
+        "//internal/digest",
+        "//internal/task",
+        "@com_github_aws_aws_sdk_go_v2_config//:config",
+        "@com_github_aws_aws_sdk_go_v2_service_s3//:s3",
+        "@com_github_bazelbuild_remote_apis//build/bazel/remote/execution/v2:execution",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_binary(
+    name = "executor-agent",
+    embed = [":executor-agent_lib"],
+    visibility = ["//visibility:public"],
+)

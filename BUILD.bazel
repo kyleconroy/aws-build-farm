@@ -1,0 +1,4 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# gazelle:prefix github.com/kyleconroy/aws-build-farm
+gazelle(name = "gazelle")

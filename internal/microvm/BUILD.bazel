@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "microvm",
+    srcs = ["executor.go"],
+    importpath = "github.com/kyleconroy/aws-build-farm/internal/microvm",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/task",
+        "@com_github_aws_aws_sdk_go_v2//aws",
+        "@com_github_aws_aws_sdk_go_v2_service_lambdamicrovms//:lambdamicrovms",
+        "@com_github_aws_aws_sdk_go_v2_service_lambdamicrovms//types",
+        "@com_github_bazelbuild_remote_apis//build/bazel/remote/execution/v2:execution",
+        "@com_github_google_uuid//:uuid",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

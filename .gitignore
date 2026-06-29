@@ -1,0 +1,2 @@
+# Bazel convenience symlinks (point into the output base; never commit).
+/bazel-*

@@ -20,59 +20,36 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	bspb "google.golang.org/genproto/googleapis/bytestream"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/kyleconroy/aws-build-farm/internal/awsenv"
 	"github.com/kyleconroy/aws-build-farm/internal/cas"
 	"github.com/kyleconroy/aws-build-farm/internal/digest"
 	"github.com/kyleconroy/aws-build-farm/internal/server"
 )
 
-func region() string {
-	for _, k := range []string{"AWS_REGION", "AWS_DEFAULT_REGION"} {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
-		}
-	}
-	return "us-east-1"
-}
-
 func TestLiveAWS(t *testing.T) {
-	if fixed := awsenv.Sanitize(); len(fixed) > 0 {
-		t.Logf("sanitized whitespace from AWS env vars: %s", strings.Join(fixed, ", "))
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	reg := region()
-	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(reg))
-	if err != nil {
-		t.Fatalf("load AWS config: %v", err)
-	}
-
+	cfg, reg := liveAWSConfig(t, ctx)
 	s3Client := s3.NewFromConfig(cfg)
-	bucket := fmt.Sprintf("aws-build-farm-livetest-%d", time.Now().UnixNano())
+	bucket := testBucket(t, ctx, s3Client, cfg, reg)
+	t.Logf("using test bucket s3://%s (region=%s)", bucket, reg)
 
-	createBucket(t, ctx, s3Client, bucket, reg)
-	t.Cleanup(func() { destroyBucket(s3Client, bucket) })
-	t.Logf("created live test bucket s3://%s (region=%s)", bucket, reg)
-
-	store := cas.NewS3Store(s3Client, bucket, "livetest")
+	// A unique prefix per run keeps the assertions independent of other runs
+	// sharing this durable bucket.
+	prefix := fmt.Sprintf("livetest/%d", time.Now().UnixNano())
+	store := cas.NewS3Store(s3Client, bucket, prefix)
 	srv := server.New(store, nil, "") // CAS + Action Cache only
 
 	// --- in-process gRPC over bufconn ---
@@ -116,13 +93,14 @@ func TestLiveAWS(t *testing.T) {
 	t.Logf("ByteStream write OK: %s", digest.Key(d))
 
 	// 3. The blob really landed in S3.
+	blobKey := prefix + "/cas/" + d.GetHash()
 	if _, err := s3Client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(bucket),
-		Key:    aws.String("livetest/cas/" + d.GetHash()),
+		Key:    aws.String(blobKey),
 	}); err != nil {
 		t.Fatalf("blob not found in S3 after upload: %v", err)
 	}
-	t.Logf("verified blob present in S3 at livetest/cas/%s", d.GetHash())
+	t.Logf("verified blob present in S3 at %s", blobKey)
 
 	// 4. FindMissingBlobs: the uploaded blob is present, a random one is missing.
 	absent := digest.FromBytes([]byte("this blob was never uploaded"))
@@ -247,44 +225,4 @@ func downloadBlob(t *testing.T, ctx context.Context, bs bspb.ByteStreamClient, d
 		buf = append(buf, chunk.GetData()...)
 	}
 	return buf
-}
-
-func createBucket(t *testing.T, ctx context.Context, c *s3.Client, bucket, reg string) {
-	t.Helper()
-	in := &s3.CreateBucketInput{Bucket: aws.String(bucket)}
-	// us-east-1 must NOT carry a LocationConstraint; every other region must.
-	if reg != "us-east-1" {
-		in.CreateBucketConfiguration = &s3types.CreateBucketConfiguration{
-			LocationConstraint: s3types.BucketLocationConstraint(reg),
-		}
-	}
-	if _, err := c.CreateBucket(ctx, in); err != nil {
-		t.Fatalf("create bucket %s: %v", bucket, err)
-	}
-}
-
-// destroyBucket empties and deletes the test bucket on a fresh context so
-// cleanup still runs if the test context has expired.
-func destroyBucket(c *s3.Client, bucket string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	p := s3.NewListObjectsV2Paginator(c, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
-	for p.HasMorePages() {
-		page, err := p.NextPage(ctx)
-		if err != nil {
-			return
-		}
-		var ids []s3types.ObjectIdentifier
-		for _, o := range page.Contents {
-			ids = append(ids, s3types.ObjectIdentifier{Key: o.Key})
-		}
-		if len(ids) > 0 {
-			c.DeleteObjects(ctx, &s3.DeleteObjectsInput{
-				Bucket: aws.String(bucket),
-				Delete: &s3types.Delete{Objects: ids},
-			})
-		}
-	}
-	c.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
 }

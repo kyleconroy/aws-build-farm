@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "awsenv",
+    srcs = ["awsenv.go"],
+    importpath = "github.com/kyleconroy/aws-build-farm/internal/awsenv",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "awsenv_test",
+    srcs = ["awsenv_test.go"],
+    embed = [":awsenv"],
+)

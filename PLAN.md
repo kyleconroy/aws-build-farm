@@ -96,6 +96,17 @@ Dependencies that are confirmed go-gettable and in use:
   (The MicroVM *execution* path still can't be run end-to-end until the deploy/
   image exists — the test only probes that the credentials reach the MicroVMs
   control plane.)
+- **Bazel build + full remote-cache end-to-end passes.** The repo now carries a
+  Bazel 9 build (`MODULE.bazel`/`MODULE.bazel.lock`, `.bazelversion` = 9.1.1,
+  gazelle-generated `BUILD.bazel` per package; rules_go 0.61.1 + gazelle 0.51.3;
+  remote-apis is regenerated as plain Go via a `gazelle_override` so it doesn't
+  pull in the proto toolchain). `internal/server/bazel_e2e_test.go` (build tag
+  `bazele2e`) drives a real Bazel 9 client building this project's own source
+  with the server as `--remote_cache`: it populates the cache, `bazel clean`s,
+  and asserts the cold rebuild is served as remote cache hits (261 actions out
+  of S3). Bucket is created and deleted by the test. Run from the repo root:
+  `go test -tags bazele2e ./internal/server/ -run TestBazelRemoteCache -v -timeout 30m`
+  (needs `bazel`/`bazelisk` on PATH; skips if absent).
 
 ## TODO — next session
 
