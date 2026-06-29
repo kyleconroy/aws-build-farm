@@ -1,0 +1,22 @@
+# Container image for the executor-agent that runs inside each Lambda MicroVM.
+#
+# Lambda builds this on top of the managed AL2023 MicroVM base image
+# (--base-image-arn), starts the agent via CMD, waits for the /ready hook to
+# return 200, and snapshots the running state. The agent is a static
+# (CGO_ENABLED=0) linux/amd64 binary, so the minimal base container is enough.
+#
+# Build context must contain the prebuilt `executor-agent` binary next to this
+# Dockerfile (see deploy/cmd/mvimage, which assembles and uploads the zip).
+FROM public.ecr.aws/lambda/microvms:al2023-minimal
+
+COPY executor-agent /usr/local/bin/executor-agent
+
+# Port the agent listens on for the /ready + /validate build hooks and for task
+# dispatch. Must match the Hooks.Port passed to CreateMicrovmImage.
+ENV PORT=8080
+EXPOSE 8080
+
+# Use ENTRYPOINT (exec form) to override any entrypoint the base image declares,
+# so the agent itself is PID 1 rather than being passed as arguments to a
+# pre-existing bootstrap.
+ENTRYPOINT ["/usr/local/bin/executor-agent"]

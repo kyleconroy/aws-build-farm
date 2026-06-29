@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -103,6 +104,10 @@ func (e *Executor) Run(ctx context.Context, command *repb.Command, inputRoot *re
 		return nil, err
 	}
 
+	// Per-VM timing breakdown, logged when the action completes.
+	t0 := time.Now()
+	var tRunCall, tRunning, tToken, tHealthy time.Time
+
 	runOut, err := e.client.RunMicrovm(ctx, &lambdamicrovms.RunMicrovmInput{
 		ImageIdentifier:          aws.String(e.cfg.ImageIdentifier),
 		ImageVersion:             optString(e.cfg.ImageVersion),
@@ -120,15 +125,22 @@ func (e *Executor) Run(ctx context.Context, command *repb.Command, inputRoot *re
 	if err != nil {
 		return nil, fmt.Errorf("run microvm: %w", err)
 	}
+	tRunCall = time.Now()
 	microvmID := aws.ToString(runOut.MicrovmId)
 
 	// Always tear the MicroVM down, even on error or context cancellation.
 	defer func() {
+		tTerminate := time.Now()
 		termCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_, _ = e.client.TerminateMicrovm(termCtx, &lambdamicrovms.TerminateMicrovmInput{
 			MicrovmIdentifier: aws.String(microvmID),
 		})
+		log.Printf("microvm %s timing: run=%s running=%s token=%s health=%s exec=%s terminate=%s total=%s",
+			microvmID,
+			dur(t0, tRunCall), dur(tRunCall, tRunning), dur(tRunning, tToken),
+			dur(tToken, tHealthy), dur(tHealthy, tTerminate), time.Since(tTerminate).Round(time.Millisecond),
+			time.Since(t0).Round(time.Millisecond))
 	}()
 
 	endpoint := aws.ToString(runOut.Endpoint)
@@ -138,6 +150,7 @@ func (e *Executor) Run(ctx context.Context, command *repb.Command, inputRoot *re
 			return nil, err
 		}
 	}
+	tRunning = time.Now()
 
 	tokOut, err := e.client.CreateMicrovmAuthToken(ctx, &lambdamicrovms.CreateMicrovmAuthTokenInput{
 		MicrovmIdentifier:  aws.String(microvmID),
@@ -147,6 +160,7 @@ func (e *Executor) Run(ctx context.Context, command *repb.Command, inputRoot *re
 	if err != nil {
 		return nil, fmt.Errorf("create auth token: %w", err)
 	}
+	tToken = time.Now()
 	authToken := tokOut.AuthToken["X-aws-proxy-auth"]
 	if authToken == "" {
 		return nil, fmt.Errorf("auth token response missing X-aws-proxy-auth")
@@ -156,6 +170,7 @@ func (e *Executor) Run(ctx context.Context, command *repb.Command, inputRoot *re
 	if err := e.waitHealthy(ctx, baseURL, authToken); err != nil {
 		return nil, err
 	}
+	tHealthy = time.Now()
 
 	t := task.ExecuteTask{
 		Region:         e.cfg.Region,
@@ -264,6 +279,15 @@ func normalizeEndpoint(endpoint string) string {
 		return endpoint
 	}
 	return "https://" + endpoint
+}
+
+// dur reports the rounded duration between two timestamps, or "-" if the end
+// timestamp was never reached (the action failed before that phase).
+func dur(from, to time.Time) string {
+	if from.IsZero() || to.IsZero() || to.Before(from) {
+		return "-"
+	}
+	return to.Sub(from).Round(time.Millisecond).String()
 }
 
 func optString(s string) *string {

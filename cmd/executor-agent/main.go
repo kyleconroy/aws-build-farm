@@ -111,6 +111,17 @@ func runTask(ctx context.Context, t task.ExecuteTask) (*repb.ActionResult, error
 		execDir = filepath.Join(workDir, wd)
 	}
 
+	// REAPI requires the worker to create the parent directories of declared
+	// outputs before running the command; the action only writes its outputs,
+	// it does not create their directories.
+	for _, p := range outputPaths(command) {
+		if dir := filepath.Dir(p); dir != "." && dir != "" {
+			if err := os.MkdirAll(filepath.Join(execDir, dir), 0o755); err != nil {
+				return nil, fmt.Errorf("create output dir for %q: %w", p, err)
+			}
+		}
+	}
+
 	runCtx := ctx
 	if t.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc

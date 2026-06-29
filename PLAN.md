@@ -108,18 +108,35 @@ Dependencies that are confirmed go-gettable and in use:
   `go test -tags bazele2e ./internal/server/ -run TestBazelRemoteCache -v -timeout 30m`
   (needs `bazel`/`bazelisk` on PATH; skips if absent).
 
-## TODO — next session
+## Remote execution — DONE and validated live (2026-06-29)
 
-1. **`deploy/` assets** (highest value; required for any live run):
-   - `deploy/Dockerfile.executor` — multi-stage: build `executor-agent` static
-     binary, base on `public.ecr.aws/lambda/microvms:al2023-minimal`, EXPOSE 8080,
-     CMD the agent. Must answer the `/run` hook with 200 (agent already does).
-   - `deploy/build-and-create-image.sh` — build the image artifact and call
-     `aws lambda-microvms create-microvm-image` (verify exact flags against docs:
-     https://docs.aws.amazon.com/lambda/latest/dg/microvms-images.html). Output
-     the image ARN to pass as `-microvm-image`.
-   - Document the IAM **execution role** the MicroVM assumes (needs
-     `s3:GetObject/PutObject/HeadObject` + `ListBucket` on the CAS bucket).
+The `deploy/` assets exist and remote execution works end-to-end against real
+AWS: a Bazel client drove one ephemeral Lambda MicroVM per action.
+
+- `deploy/Dockerfile.executor`, `deploy/iam/*.json`, `deploy/cmd/mvimage` (image
+  + IAM orchestrator), `deploy/build-and-create-image.sh`. See `deploy/README.md`.
+- **MicroVMs are Graviton/ARM64 only** — the agent is compiled `linux/arm64`.
+  This also means remote-executed Bazel actions must be arm64 (cross-compile when
+  the client is x86). Arch-independent actions (`//test/remoteexec` genrules) run
+  as-is and were used for the live validation.
+- Gotchas found and fixed while bringing it up: (1) agent binary must match the
+  Graviton arch; (2) base container image needs an explicit `ENTRYPOINT`;
+  (3) do **not** enable the `/ready` build hook (it timed out — Lambda snapshots
+  after default init); (4) the executor-agent must create output-file parent
+  directories before running the command (REAPI requirement) — fixed in
+  `cmd/executor-agent`.
+- Per-VM timing (logged by `internal/microvm`): ~6 s total each — wait-for-RUNNING
+  ~2.2 s and agent-health ~1.1 s dominate the fixed overhead; `RunMicrovm`/token/
+  terminate are sub-second. 24 actions ran in ~76 s at 2 concurrent VMs;
+  concurrency is capped by the account's MicroVM memory quota.
+
+### Remaining
+
+- **Run the project's own Go build via remote execution.** Needs an arm64
+  execution platform so rules_go cross-compiles and ships an arm64 Go SDK to the
+  VMs (the host here is x86, MicroVMs are arm64). The cache path already builds
+  the repo; this is the execution-platform plumbing on top.
+- Request a MicroVM memory quota increase for real concurrency.
 2. **README.md** — architecture diagram, quickstart, the flags, the IAM policy
    for the *server* identity (`lambda:RunMicrovm/GetMicrovm/CreateMicrovmAuthToken/
    TerminateMicrovm` + the create-image actions) and the agent execution role,

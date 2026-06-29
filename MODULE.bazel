@@ -16,12 +16,12 @@ go_deps.from_file(go_mod = "//:go.mod")
 # pre-generated .pb.go. Regenerate it as plain Go (proto rules disabled) so we
 # compile the committed .pb.go without pulling in the proto toolchain.
 go_deps.gazelle_override(
-    path = "github.com/bazelbuild/remote-apis",
     build_file_generation = "clean",
     directives = [
         "gazelle:proto disable_global",
     ],
+    path = "github.com/bazelbuild/remote-apis",
 )
 
 # Populated by `bazel mod tidy`.
-use_repo(go_deps, "com_github_aws_aws_sdk_go_v2", "com_github_aws_aws_sdk_go_v2_config", "com_github_aws_aws_sdk_go_v2_feature_s3_manager", "com_github_aws_aws_sdk_go_v2_service_lambdamicrovms", "com_github_aws_aws_sdk_go_v2_service_s3", "com_github_aws_smithy_go", "com_github_bazelbuild_remote_apis", "com_github_google_uuid", "com_google_cloud_go_longrunning", "org_golang_google_genproto_googleapis_bytestream", "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_protobuf")
+use_repo(go_deps, "com_github_aws_aws_sdk_go_v2", "com_github_aws_aws_sdk_go_v2_config", "com_github_aws_aws_sdk_go_v2_feature_s3_manager", "com_github_aws_aws_sdk_go_v2_service_iam", "com_github_aws_aws_sdk_go_v2_service_lambdamicrovms", "com_github_aws_aws_sdk_go_v2_service_s3", "com_github_aws_aws_sdk_go_v2_service_sts", "com_github_aws_smithy_go", "com_github_bazelbuild_remote_apis", "com_github_google_uuid", "com_google_cloud_go_longrunning", "org_golang_google_genproto_googleapis_bytestream", "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_protobuf")

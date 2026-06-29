@@ -1,0 +1,7 @@
+# Trivial, architecture-independent genrules used to drive and time remote
+# execution (one Lambda MicroVM per action). Each action runs a small shell
+# command on the worker, so they exercise the full RunMicrovm -> agent ->
+# TerminateMicrovm path without depending on a language toolchain in the VM.
+load(":actions.bzl", "remote_actions")
+
+remote_actions(count = 24)
