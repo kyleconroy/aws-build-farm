@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/kyleconroy/aws-build-farm/internal/awsenv"
 	"github.com/kyleconroy/aws-build-farm/internal/cas"
 	"github.com/kyleconroy/aws-build-farm/internal/microvm"
 	"github.com/kyleconroy/aws-build-farm/internal/server"
@@ -47,6 +48,11 @@ func run() error {
 
 	if *bucket == "" {
 		return fmt.Errorf("-bucket is required")
+	}
+
+	if fixed := awsenv.Sanitize(); len(fixed) > 0 {
+		log.Printf("warning: trimmed surrounding whitespace from AWS env vars %s; "+
+			"fix the environment to remove this workaround", strings.Join(fixed, ", "))
 	}
 
 	ctx := context.Background()

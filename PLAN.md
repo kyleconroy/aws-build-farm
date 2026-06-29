@@ -28,6 +28,24 @@ into the MicroVM image and drive it over that endpoint.
   in the environment — **never pasted into chat**. (A long-lived key was leaked
   into the chat transcript earlier and should be treated as compromised/rotated.)
 
+### Credential status (verified 2026-06-29)
+
+- The env credentials are **valid** and were verified end-to-end against real
+  AWS: `STS GetCallerIdentity`, a full S3 CAS/ByteStream/Action-Cache round trip
+  (see live test below), and a Lambda MicroVMs control-plane probe all succeed.
+- **Two caveats for whoever owns the environment:**
+  1. `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are injected with a stray
+     **leading space**. AWS SigV4 copies it into the Authorization header and
+     rejects the request with `IncompleteSignature: Invalid key=value pair
+     (missing equal-sign) in Authorization header`. Fix the env values to drop
+     the workaround. Until then, `internal/awsenv.Sanitize()` (called from
+     `main`) trims the whitespace in place at startup.
+  2. The identity is the account **root** user (`arn:aws:iam::<acct>:root`).
+     Root access keys should not be used for automation — create a scoped IAM
+     principal (CAS bucket S3 access + `lambda:RunMicrovm/GetMicrovm/
+     CreateMicrovmAuthToken/TerminateMicrovm` + create-image actions) and retire
+     the root keys.
+
 ## Layout
 
 ```
@@ -64,7 +82,20 @@ Dependencies that are confirmed go-gettable and in use:
   outputs, return ActionResult). `output_paths` with fallback to deprecated
   `output_files`/`output_directories`.
 - `Runner` interface so Execution is unit-testable without AWS.
-- Tests: `internal/digest`, `internal/casfs` (round trip). `go build`/`go vet` clean.
+- `internal/awsenv.Sanitize()` trims whitespace-corrupted AWS credential env
+  vars at startup (workaround for the malformed env; see Credential status).
+- Tests: `internal/digest`, `internal/casfs` (round trip), `internal/awsenv`.
+  `go build`/`go vet` clean.
+- **Live end-to-end S3 validation passes** against real AWS:
+  `internal/server/live_aws_test.go` (build tag `liveaws`) creates a throwaway
+  S3 bucket, stands up the gRPC server over bufconn, and round-trips
+  Capabilities + ByteStream Write/Read + FindMissingBlobs + BatchUpdate/Read +
+  Action Cache through real S3, verifying objects actually land in the bucket,
+  then deletes the bucket. Run with:
+  `go test -tags liveaws ./internal/server/ -run TestLiveAWS -v`.
+  (The MicroVM *execution* path still can't be run end-to-end until the deploy/
+  image exists — the test only probes that the credentials reach the MicroVMs
+  control plane.)
 
 ## TODO — next session
 
@@ -86,9 +117,11 @@ Dependencies that are confirmed go-gettable and in use:
    `Runner`, exercise CAS round trip via ByteStream, ActionCache, and an
    `Execute` that hits the cache on the second call. Proves the whole gRPC
    surface without AWS.
-4. **Live validation** (needs creds in env + image deployed): run the server,
-   point Bazel or `remote-apis`-tools at it, run a trivial action, confirm an
-   ActionResult and a cache hit on re-run.
+4. **Live validation**: the **S3 CAS/Action-Cache path is done** —
+   `internal/server/live_aws_test.go` (`-tags liveaws`) validates it against
+   real AWS. Still TODO once `deploy/` + image exist: run the server, point
+   Bazel or `remote-apis`-tools at it, run a trivial *executed* action, confirm
+   an ActionResult and a cache hit on re-run.
 
 ## Known gaps / risks to verify against real AWS
 
