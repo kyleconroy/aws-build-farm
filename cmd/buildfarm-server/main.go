@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"strings"
+	"time"
 
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/lambdamicrovms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -60,6 +63,18 @@ func run() error {
 	if *region != "" {
 		opts = append(opts, awsconfig.WithRegion(*region))
 	}
+	// Bound the S3/Lambda HTTP connection pool. The CAS fans out thousands of
+	// concurrent object operations during a large build's input upload; without
+	// a cap the process exhausts its file-descriptor limit ("too many open
+	// files"). Connections are pooled and reused, and excess requests block for
+	// a free connection rather than opening a new socket.
+	httpClient := awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
+		tr.MaxConnsPerHost = 256
+		tr.MaxIdleConns = 256
+		tr.MaxIdleConnsPerHost = 256
+		tr.IdleConnTimeout = 90 * time.Second
+	})
+	opts = append(opts, awsconfig.WithHTTPClient(httpClient))
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)

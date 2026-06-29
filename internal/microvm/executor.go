@@ -107,6 +107,7 @@ func (e *Executor) Run(ctx context.Context, command *repb.Command, inputRoot *re
 	// Per-VM timing breakdown, logged when the action completes.
 	t0 := time.Now()
 	var tRunCall, tRunning, tToken, tHealthy time.Time
+	log.Printf("microvm: launching for action (%d args, input root %s)", len(command.GetArguments()), inputRoot.GetHash()[:12])
 
 	runOut, err := e.client.RunMicrovm(ctx, &lambdamicrovms.RunMicrovmInput{
 		ImageIdentifier:          aws.String(e.cfg.ImageIdentifier),

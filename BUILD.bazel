@@ -2,3 +2,15 @@ load("@gazelle//:def.bzl", "gazelle")
 
 # gazelle:prefix github.com/kyleconroy/aws-build-farm
 gazelle(name = "gazelle")
+
+# Execution platform for remote execution on Lambda MicroVMs, which are
+# ARM64/Graviton. Used as both the execution and target platform so rules_go
+# cross-compiles to arm64 and runs the compile actions (with the arm64 Go SDK)
+# on the MicroVM workers. See deploy/README.md.
+platform(
+    name = "linux_arm64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:arm64",
+    ],
+)

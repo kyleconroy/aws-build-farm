@@ -130,13 +130,31 @@ AWS: a Bazel client drove one ephemeral Lambda MicroVM per action.
   terminate are sub-second. 24 actions ran in ~76 s at 2 concurrent VMs;
   concurrency is capped by the account's MicroVM memory quota.
 
-### Remaining
+### The project's own Go build runs via remote execution — DONE (2026-06-29)
 
-- **Run the project's own Go build via remote execution.** Needs an arm64
-  execution platform so rules_go cross-compiles and ships an arm64 Go SDK to the
-  VMs (the host here is x86, MicroVMs are arm64). The cache path already builds
-  the repo; this is the execution-platform plumbing on top.
-- Request a MicroVM memory quota increase for real concurrency.
+`bazel build //internal/digest:digest --remote_executor=grpc://localhost:8980
+--extra_execution_platforms=//:linux_arm64 --platforms=//:linux_arm64 --jobs=2`
+completed successfully: **117 of 120 actions executed remotely**, each as its own
+ARM64 MicroVM (cross-compiled by rules_go). The `//:linux_arm64` platform
+(root `BUILD.bazel`) is used as both target and execution platform; rules_go
+auto-registers the arm64 Go SDK.
+
+Two server changes were needed to survive a real build's load (both committed):
+- `BatchUpdateBlobs` uploads its blobs concurrently (was serial — a large
+  toolchain's input upload was the bottleneck).
+- the S3/Lambda HTTP client pool is bounded (`MaxConnsPerHost`), or the CAS
+  fan-out exhausts the process file-descriptor limit ("too many open files").
+
+Timing characteristics on the default 2 GB / 1 vCPU MicroVM: the one-time Go
+toolchain build is heavy in-VM (`builder` ~6 min, `GoStdlib` ~5.5 min); ordinary
+package compiles are ~10-20 s each. Concurrency is still pinned at `--jobs=2` by
+the account's MicroVM memory quota (2 concurrent 2 GB VMs).
+
+### Remaining / nice-to-have
+
+- Request a MicroVM memory quota increase for real parallelism (and/or build the
+  image with a smaller `Resources.MinimumMemoryInMiB` to fit more VMs).
+- A bigger MicroVM size would cut the one-time toolchain build time.
 2. **README.md** — architecture diagram, quickstart, the flags, the IAM policy
    for the *server* identity (`lambda:RunMicrovm/GetMicrovm/CreateMicrovmAuthToken/
    TerminateMicrovm` + the create-image actions) and the agent execution role,

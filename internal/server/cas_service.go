@@ -72,17 +72,30 @@ func (s *Server) FindMissingBlobs(ctx context.Context, req *repb.FindMissingBlob
 	return resp, nil
 }
 
-// BatchUpdateBlobs stores a batch of small blobs.
+// BatchUpdateBlobs stores a batch of small blobs. Each blob is an independent
+// S3 write, so the batch is uploaded concurrently; this matters a lot for the
+// first build of a large toolchain, where the batch holds thousands of files.
 func (s *Server) BatchUpdateBlobs(ctx context.Context, req *repb.BatchUpdateBlobsRequest) (*repb.BatchUpdateBlobsResponse, error) {
-	resp := &repb.BatchUpdateBlobsResponse{}
-	for _, r := range req.GetRequests() {
-		st := s.putOne(ctx, r.GetDigest(), r.GetData())
-		resp.Responses = append(resp.Responses, &repb.BatchUpdateBlobsResponse_Response{
-			Digest: r.GetDigest(),
-			Status: st,
-		})
+	reqs := req.GetRequests()
+	responses := make([]*repb.BatchUpdateBlobsResponse_Response, len(reqs))
+
+	const concurrency = 32
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for i, r := range reqs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, r *repb.BatchUpdateBlobsRequest_Request) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			responses[i] = &repb.BatchUpdateBlobsResponse_Response{
+				Digest: r.GetDigest(),
+				Status: s.putOne(ctx, r.GetDigest(), r.GetData()),
+			}
+		}(i, r)
 	}
-	return resp, nil
+	wg.Wait()
+	return &repb.BatchUpdateBlobsResponse{Responses: responses}, nil
 }
 
 func (s *Server) putOne(ctx context.Context, d *repb.Digest, data []byte) *rpcstatus.Status {
