@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "casfs",
-    srcs = ["casfs.go"],
+    srcs = [
+        "cache.go",
+        "casfs.go",
+    ],
     importpath = "github.com/kyleconroy/aws-build-farm/internal/casfs",
     visibility = ["//:__subpackages__"],
     deps = [

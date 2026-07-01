@@ -114,7 +114,8 @@ func (e *Executor) Run(ctx context.Context, command *repb.Command, inputRoot *re
 	// Per-VM timing breakdown, logged when the action completes.
 	t0 := time.Now()
 	var tRunCall, tRunning, tToken, tHealthy time.Time
-	log.Printf("microvm: launching for action (%d args, input root %s)", len(command.GetArguments()), inputRoot.GetHash()[:12])
+	log.Printf("microvm: launching for action (%d args, input root %s/%d, out %s)",
+		len(command.GetArguments()), inputRoot.GetHash(), inputRoot.GetSizeBytes(), firstOutput(command))
 
 	runOut, err := e.client.RunMicrovm(ctx, &lambdamicrovms.RunMicrovmInput{
 		ImageIdentifier:          aws.String(e.cfg.ImageIdentifier),
@@ -303,6 +304,21 @@ func optString(s string) *string {
 		return nil
 	}
 	return aws.String(s)
+}
+
+// firstOutput returns a representative output path for the command, used only to
+// label the launch log so an action (e.g. the Go SDK build) can be identified.
+func firstOutput(command *repb.Command) string {
+	if p := command.GetOutputPaths(); len(p) > 0 {
+		return p[0]
+	}
+	if p := command.GetOutputFiles(); len(p) > 0 {
+		return p[0]
+	}
+	if p := command.GetOutputDirectories(); len(p) > 0 {
+		return p[0]
+	}
+	return ""
 }
 
 func sleep(ctx context.Context, d time.Duration) error {

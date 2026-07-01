@@ -111,8 +111,16 @@ func runTask(ctx context.Context, t task.ExecuteTask) (*repb.ActionResult, error
 	}
 	defer os.RemoveAll(workDir)
 
+	// Serve input blobs through a local read-through cache when one is baked into
+	// the image (CAS_BLOB_CACHE); the Go SDK and other large, stable inputs live
+	// there and never touch S3.
+	var inputs casfs.Getter = store
+	if dir := os.Getenv("CAS_BLOB_CACHE"); dir != "" {
+		inputs = casfs.NewDiskCache(dir, store)
+	}
+
 	inputRoot := &repb.Digest{Hash: t.InputRootHash, SizeBytes: t.InputRootSize}
-	if err := casfs.Materialize(ctx, store, inputRoot, workDir); err != nil {
+	if err := casfs.Materialize(ctx, inputs, inputRoot, workDir); err != nil {
 		return nil, fmt.Errorf("materialize inputs: %w", err)
 	}
 

@@ -11,6 +11,13 @@ FROM public.ecr.aws/lambda/microvms:al2023-minimal
 
 COPY executor-agent /usr/local/bin/executor-agent
 
+# Content-addressed blobs baked into the image (the Go SDK and other large,
+# stable inputs). The executor-agent serves these locally instead of fetching
+# them from S3 on every action. The directory may be empty when nothing was
+# baked, in which case every input read simply falls through to the CAS.
+COPY casblobs /opt/casblobs
+ENV CAS_BLOB_CACHE=/opt/casblobs
+
 # Port the agent listens on for the /ready + /validate build hooks and for task
 # dispatch. Must match the Hooks.Port passed to CreateMicrovmImage.
 ENV PORT=8080
