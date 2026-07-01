@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"time"
 
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
@@ -81,7 +82,16 @@ func handleExecute(w http.ResponseWriter, r *http.Request) {
 }
 
 func runTask(ctx context.Context, t task.ExecuteTask) (*repb.ActionResult, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(t.Region))
+	// Keep a warm pool of connections to S3: the input tree is materialized with
+	// up to materializeConcurrency parallel reads, and the default transport only
+	// keeps 2 idle connections per host, so it would otherwise reopen a TLS
+	// connection for almost every blob.
+	httpClient := awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
+		tr.MaxIdleConns = 128
+		tr.MaxIdleConnsPerHost = 128
+		tr.MaxConnsPerHost = 128
+	})
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(t.Region), awsconfig.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, fmt.Errorf("load AWS config: %w", err)
 	}

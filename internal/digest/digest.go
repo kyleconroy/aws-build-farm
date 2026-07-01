@@ -44,6 +44,11 @@ func Equal(a, b *repb.Digest) bool {
 	return a.GetHash() == b.GetHash() && a.GetSizeBytes() == b.GetSizeBytes()
 }
 
+// String returns the canonical "hash/size" rendering of d, matching Key.
+func String(d *repb.Digest) string {
+	return Key(d)
+}
+
 // Validate checks that d is a structurally valid SHA-256 digest.
 func Validate(d *repb.Digest) error {
 	if d == nil {

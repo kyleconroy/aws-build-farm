@@ -10,12 +10,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kyleconroy/aws-build-farm/internal/digest"
 )
+
+// materializeConcurrency bounds the number of concurrent CAS reads issued while
+// materializing an input tree. Go build actions ship the entire Go SDK as
+// inputs (thousands of small blobs), so fetching them one at a time dominates
+// action latency; fetching them in parallel is the single biggest speedup.
+const materializeConcurrency = 64
 
 // Getter reads blobs from the CAS.
 type Getter interface {
@@ -28,55 +35,141 @@ type Putter interface {
 }
 
 // Materialize writes the directory tree rooted at root into dir, fetching every
-// Directory and File blob from the CAS.
+// Directory and File blob from the CAS. Blobs are fetched concurrently (bounded
+// by materializeConcurrency); on the first error it stops and returns it.
 func Materialize(ctx context.Context, store Getter, root *repb.Digest, dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	m := &materializer{
+		store:  store,
+		ctx:    ctx,
+		cancel: cancel,
+		sem:    make(chan struct{}, materializeConcurrency),
 	}
-	data, err := store.Get(ctx, root)
+	m.scheduleDir(root, dir)
+	m.wg.Wait()
+	return m.firstErr()
+}
+
+// materializer fans out CAS reads across a bounded pool of goroutines. Each
+// directory and file blob is fetched in its own goroutine that blocks on sem
+// before issuing the read, so at most materializeConcurrency reads are in
+// flight. Goroutines never wait on one another (only the top-level Wait does),
+// which keeps the bounded pool free of hold-and-wait deadlocks.
+type materializer struct {
+	store  Getter
+	ctx    context.Context
+	cancel context.CancelFunc
+	sem    chan struct{}
+	wg     sync.WaitGroup
+
+	mu  sync.Mutex
+	err error
+}
+
+func (m *materializer) fail(err error) {
+	m.mu.Lock()
+	if m.err == nil {
+		m.err = err
+		m.cancel()
+	}
+	m.mu.Unlock()
+}
+
+func (m *materializer) firstErr() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.err
+}
+
+// get issues a single CAS read while holding one of the concurrency slots.
+func (m *materializer) get(d *repb.Digest) ([]byte, error) {
+	select {
+	case m.sem <- struct{}{}:
+	case <-m.ctx.Done():
+		return nil, m.ctx.Err()
+	}
+	defer func() { <-m.sem }()
+	return m.store.Get(m.ctx, d)
+}
+
+func (m *materializer) scheduleDir(d *repb.Digest, path string) {
+	m.wg.Add(1)
+	go m.processDir(d, path)
+}
+
+func (m *materializer) processDir(d *repb.Digest, path string) {
+	defer m.wg.Done()
+	if m.firstErr() != nil {
+		return
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		m.fail(err)
+		return
+	}
+	data, err := m.get(d)
 	if err != nil {
-		return fmt.Errorf("fetch directory %s: %w", digest.Key(root), err)
+		m.fail(fmt.Errorf("fetch directory %s: %w", digest.Key(d), err))
+		return
 	}
-	d := &repb.Directory{}
-	if err := proto.Unmarshal(data, d); err != nil {
-		return fmt.Errorf("unmarshal directory %s: %w", digest.Key(root), err)
-	}
-
-	for _, f := range d.GetFiles() {
-		if err := checkName(f.GetName()); err != nil {
-			return err
-		}
-		content, err := store.Get(ctx, f.GetDigest())
-		if err != nil {
-			return fmt.Errorf("fetch file %q (%s): %w", f.GetName(), digest.Key(f.GetDigest()), err)
-		}
-		mode := os.FileMode(0o644)
-		if f.GetIsExecutable() {
-			mode = 0o755
-		}
-		if err := os.WriteFile(filepath.Join(dir, f.GetName()), content, mode); err != nil {
-			return err
-		}
+	dir := &repb.Directory{}
+	if err := proto.Unmarshal(data, dir); err != nil {
+		m.fail(fmt.Errorf("unmarshal directory %s: %w", digest.Key(d), err))
+		return
 	}
 
-	for _, sl := range d.GetSymlinks() {
+	// Symlinks are cheap and local; create them inline. Files and subdirectories
+	// each become their own scheduled unit. The directory itself already exists
+	// (created above) before any child work is scheduled into it.
+	for _, sl := range dir.GetSymlinks() {
 		if err := checkName(sl.GetName()); err != nil {
-			return err
+			m.fail(err)
+			return
 		}
-		if err := os.Symlink(sl.GetTarget(), filepath.Join(dir, sl.GetName())); err != nil {
-			return err
+		if err := os.Symlink(sl.GetTarget(), filepath.Join(path, sl.GetName())); err != nil {
+			m.fail(err)
+			return
 		}
 	}
-
-	for _, sub := range d.GetDirectories() {
+	for _, f := range dir.GetFiles() {
+		if err := checkName(f.GetName()); err != nil {
+			m.fail(err)
+			return
+		}
+		m.scheduleFile(f, filepath.Join(path, f.GetName()))
+	}
+	for _, sub := range dir.GetDirectories() {
 		if err := checkName(sub.GetName()); err != nil {
-			return err
+			m.fail(err)
+			return
 		}
-		if err := Materialize(ctx, store, sub.GetDigest(), filepath.Join(dir, sub.GetName())); err != nil {
-			return err
-		}
+		m.scheduleDir(sub.GetDigest(), filepath.Join(path, sub.GetName()))
 	}
-	return nil
+}
+
+func (m *materializer) scheduleFile(f *repb.FileNode, path string) {
+	m.wg.Add(1)
+	go m.processFile(f, path)
+}
+
+func (m *materializer) processFile(f *repb.FileNode, path string) {
+	defer m.wg.Done()
+	if m.firstErr() != nil {
+		return
+	}
+	content, err := m.get(f.GetDigest())
+	if err != nil {
+		m.fail(fmt.Errorf("fetch file %q (%s): %w", f.GetName(), digest.Key(f.GetDigest()), err))
+		return
+	}
+	mode := os.FileMode(0o644)
+	if f.GetIsExecutable() {
+		mode = 0o755
+	}
+	if err := os.WriteFile(path, content, mode); err != nil {
+		m.fail(err)
+		return
+	}
 }
 
 // CaptureFile uploads the file at path and returns an OutputFile referencing it.

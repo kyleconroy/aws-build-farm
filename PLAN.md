@@ -150,11 +150,45 @@ toolchain build is heavy in-VM (`builder` ~6 min, `GoStdlib` ~5.5 min); ordinary
 package compiles are ~10-20 s each. Concurrency is still pinned at `--jobs=2` by
 the account's MicroVM memory quota (2 concurrent 2 GB VMs).
 
-### Remaining / nice-to-have
+### Per-action latency — parallel input materialization (2026-07-01)
 
-- Request a MicroVM memory quota increase for real parallelism (and/or build the
-  image with a smaller `Resources.MinimumMemoryInMiB` to fit more VMs).
-- A bigger MicroVM size would cut the one-time toolchain build time.
+Each action's MicroVM re-materializes its whole input tree from the CAS. For a
+Go compile that tree is the entire Go SDK — thousands of small blobs. The agent
+fetched them with serial, one-at-a-time S3 GETs, so a trivial compile spent
+~35 s just downloading inputs (the compile itself is milliseconds).
+
+`casfs.Materialize` now fans the reads out across a bounded pool
+(`materializeConcurrency = 64`), and the agent's S3 client keeps a warm
+connection pool so those 64 workers reuse TLS connections. Measured on the
+single-package incremental build (edit one file, cache accepted, 1 remote
+action):
+
+| | before | after |
+|---|---|---|
+| in-VM exec | 34.99 s | 4.15 s |
+| VM total | 38.76 s | 9.14 s |
+| build wall-clock | 81.4 s | 22.1 s |
+
+The same speedup applies to every action in a cold build (the stdlib compile
+materialized the SDK serially too).
+
+Also fixed `deploy/cmd/mvimage`: an already-existing image is reported as a
+`ValidationException` ("already exists"), not a `ConflictException`, so
+`isConflict` never took the update path and re-runs failed instead of pushing a
+new image version.
+
+### Remaining / nice-to-have (in rough order of payoff)
+
+- **Warm VM pool.** ~5 s of every action is fixed MicroVM lifecycle
+  (run+running+health+token+terminate). Once materialization is fast this is the
+  dominant per-action cost; reusing VMs across actions instead of one-per-action
+  would remove it.
+- **Client flags:** `--remote_download_minimal` avoids pulling intermediate
+  `.a` outputs back to the client; a warm Bazel server skips re-analysis.
+- Request a MicroVM memory quota increase for real parallelism (currently pinned
+  at `--jobs=2`), and/or a smaller `Resources.MinimumMemoryInMiB` to fit more VMs.
+- A bigger MicroVM size would cut the one-time toolchain build (builder/stdlib
+  are CPU-bound); ordinary actions are now I/O-bound and already fast.
 2. **README.md** — architecture diagram, quickstart, the flags, the IAM policy
    for the *server* identity (`lambda:RunMicrovm/GetMicrovm/CreateMicrovmAuthToken/
    TerminateMicrovm` + the create-image actions) and the agent execution role,

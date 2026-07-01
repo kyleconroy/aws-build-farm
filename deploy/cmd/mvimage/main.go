@@ -190,7 +190,15 @@ func withRetry(fn func() error, attempts int, delay time.Duration) error {
 func isConflict(err error) bool {
 	var ae smithy.APIError
 	if errors.As(err, &ae) {
-		return ae.ErrorCode() == "ConflictException"
+		if ae.ErrorCode() == "ConflictException" {
+			return true
+		}
+		// An already-existing image is reported as a ValidationException
+		// ("A MicroVM image with the name '...' already exists ..."), not a
+		// ConflictException; treat it as a conflict so we fall through to update.
+		if ae.ErrorCode() == "ValidationException" && strings.Contains(ae.ErrorMessage(), "already exists") {
+			return true
+		}
 	}
 	return false
 }
