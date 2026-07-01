@@ -69,6 +69,13 @@ type Client interface {
 	TerminateMicrovm(ctx context.Context, in *lambdamicrovms.TerminateMicrovmInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.TerminateMicrovmOutput, error)
 }
 
+// startupPollInterval is how often we re-check whether a freshly launched
+// MicroVM has reached RUNNING and whether its agent is healthy. The VM restores
+// from a snapshot in ~2s, so a coarse (e.g. 1s) interval wastes up to a full
+// tick per check waiting past the moment it actually became ready; a tight poll
+// detects readiness promptly at the cost of a few extra cheap API calls.
+const startupPollInterval = 100 * time.Millisecond
+
 // Executor launches MicroVMs and dispatches actions to them.
 type Executor struct {
 	client Client
@@ -239,7 +246,7 @@ func (e *Executor) waitRunning(ctx context.Context, microvmID string) (string, e
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("microvm did not reach RUNNING within %s (state %s)", e.cfg.StartupTimeout, out.State)
 		}
-		if err := sleep(ctx, time.Second); err != nil {
+		if err := sleep(ctx, startupPollInterval); err != nil {
 			return "", err
 		}
 	}
@@ -264,7 +271,7 @@ func (e *Executor) waitHealthy(ctx context.Context, baseURL, authToken string) e
 		if time.Now().After(deadline) {
 			return fmt.Errorf("executor-agent did not become healthy within %s", e.cfg.StartupTimeout)
 		}
-		if err := sleep(ctx, time.Second); err != nil {
+		if err := sleep(ctx, startupPollInterval); err != nil {
 			return err
 		}
 	}
