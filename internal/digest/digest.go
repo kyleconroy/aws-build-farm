@@ -39,6 +39,11 @@ func Key(d *repb.Digest) string {
 	return fmt.Sprintf("%s/%d", d.GetHash(), d.GetSizeBytes())
 }
 
+// Equal reports whether a and b identify the same blob.
+func Equal(a, b *repb.Digest) bool {
+	return a.GetHash() == b.GetHash() && a.GetSizeBytes() == b.GetSizeBytes()
+}
+
 // Validate checks that d is a structurally valid SHA-256 digest.
 func Validate(d *repb.Digest) error {
 	if d == nil {
