@@ -177,12 +177,49 @@ Also fixed `deploy/cmd/mvimage`: an already-existing image is reported as a
 `isConflict` never took the update path and re-runs failed instead of pushing a
 new image version.
 
+### Poll interval (2026-07-01)
+
+`waitRunning`/`waitHealthy` polled on a 1s tick; a VM that became ready mid-tick
+sat idle until the next second. Polling every 100ms cut per-VM startup
+(run+running+token+health) from ~4.85s to ~3.1s (best-case VM total 9.1s → 4.8s).
+The floor is now snapshot restore (~1.5s) + agent health (~1.2s); cutting that
+needs VM reuse.
+
+### Baking the toolchain into the image — tried, measured no-win, reverted (2026-07-01)
+
+Hypothesis: the Go SDK/toolchain (467 blobs / ~210 MB per Go action) is stable
+and re-fetched from the CAS every action, so bake it into the image and serve it
+locally. Implemented and kept (off by default), but **it did not help and
+worsened tail latency**, so the deployed image was rebuilt with baking off.
+
+- `casfs.DiskCache` — read-through content-addressed cache (`/opt/casblobs`),
+  safe S3 fallback, unit-tested. Agent uses it when `CAS_BLOB_CACHE` is set.
+- `deploy/cmd/cas-bake` — walks an input root from the CAS and dumps every blob
+  to a flat `<hash>` dir.
+- `build-and-create-image.sh` bakes when `BAKE_INPUT_ROOT=<hash>/<size>` is set
+  (`BAKE_PREFIX` matches the server `-prefix`); the Dockerfile copies the dir to
+  `/opt/casblobs`. With no `BAKE_INPUT_ROOT` the dir is empty and the cache is
+  inert — identical behavior to no cache.
+
+Result: pre-baking exec ~2.7s avg (no spikes); post-baking ~3.6s avg with
+recurring 5–18s spikes (49s on first touch). Root cause: parallel
+materialization had already made the S3 fetch cheap, so the remaining per-action
+cost is **writing the 210 MB tree into the work dir** (unchanged by baking) plus
+paging a much larger image on cold VMs. A read-through cache can't win here
+because `Materialize` still copies every file.
+
+To actually capture the win you must avoid re-writing the toolchain per action:
+**hardlink/reflink** cached blobs into the work dir (watch for EXDEV if
+`/opt/casblobs` and the work dir are on different mounts), or a **warm VM/work-dir
+pool** that materializes the toolchain once and reuses it.
+
 ### Remaining / nice-to-have (in rough order of payoff)
 
-- **Warm VM pool.** ~5 s of every action is fixed MicroVM lifecycle
-  (run+running+health+token+terminate). Once materialization is fast this is the
-  dominant per-action cost; reusing VMs across actions instead of one-per-action
-  would remove it.
+- **Warm VM pool.** ~3 s of every action is fixed MicroVM lifecycle
+  (run+running+health+token+terminate) and another ~2 s re-materializes the same
+  toolchain. Reusing VMs (or at least a warm work dir) across actions collapses
+  both — the single biggest remaining lever, and the only way baking-style local
+  toolchain reuse pays off.
 - **Client flags:** `--remote_download_minimal` avoids pulling intermediate
   `.a` outputs back to the client; a warm Bazel server skips re-analysis.
 - Request a MicroVM memory quota increase for real parallelism (currently pinned
